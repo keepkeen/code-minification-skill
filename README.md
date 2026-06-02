@@ -162,6 +162,10 @@ code-minification/
 └── .gitignore
 ```
 
+## 🙏 Credits
+
+Inspired by [vix](https://github.com/kirby88/vix) — an AI coding agent with a native Tree-sitter virtual filesystem for code minification. This skill brings the same idea to any agent via a standalone Python tool.
+
 ## 📄 License
 
 [MIT](LICENSE.txt) — free to use, modify, and distribute.

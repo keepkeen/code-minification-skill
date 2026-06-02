@@ -162,6 +162,10 @@ code-minification/
 └── .gitignore
 ```
 
+## 🙏 致谢
+
+灵感来源于 [vix](https://github.com/kirby88/vix) — 一个内置 Tree-sitter 虚拟文件系统实现代码压缩的 AI 编程助手。本 skill 将同样的思路以独立 Python 工具的形式带给所有 agent。
+
 ## 📄 许可证
 
 [MIT](LICENSE.txt) — 自由使用、修改和分发。
