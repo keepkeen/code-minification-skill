@@ -1,8 +1,11 @@
 ---
 name: code-minification
-description: Use for read-only exploration of large source files when token budget is tight, especially when the current agent does not provide a native read_minified_file tool. Avoid for line-number-sensitive debugging, code review, stack traces, and edits unless you validate against raw source.
-allowed-tools: Bash(python3 *), Read, Write
-compatibility: opencode
+description: Read-only exploration of large source files when token budget is tight. Reduces tokens 10-35% by stripping comments and formatting noise.
+when_to_use: "Explore large files cheaply. Save tokens. Slim down code before LLM analysis. Works when the agent has no native read_minified_file. Not for debugging, code review, or line-number-sensitive edits."
+argument-hint: "[--keep-comments] [--json] [--language go]"
+allowed-tools: Bash(python3 minify_code.py *)
+compatibility: opencode, claude-code, codex
+license: MIT
 metadata:
   languages: "python,javascript,typescript,go,rust,java,c,cpp,csharp,swift,ruby,shell"
   token_reduction: "10-35% typical, higher on some Python files"
@@ -70,30 +73,29 @@ Source file
 
 ## Resource Tool: `minify_code.py`
 
-A companion Python script is provided at the same path as this SKILL.md. It implements code minification for common languages using built-in stdlib only (no pip install required).
+A companion Python script at the same path as this SKILL.md. Pure stdlib, no pip install.
 
-Agents usually run shell commands from the project directory, not the skill directory. Resolve the script path relative to this `SKILL.md` before calling it. For common local installs:
+Agents run from the project directory, not the skill directory. Always resolve the path:
 
 ```bash
-SKILL_DIR="${CODE_MINIFICATION_SKILL_DIR:-$HOME/.agents/skills/code-minification}"
-test -f "$SKILL_DIR/minify_code.py" || SKILL_DIR="$HOME/.codex/skills/code-minification"
-python3 "$SKILL_DIR/minify_code.py" path/to/file.py
+# Claude Code / opencode (automatic):
+python3 "${CLAUDE_SKILL_DIR:-$HOME/.agents/skills/code-minification}/minify_code.py" path/to/file.py
 ```
 
 ### Usage
 
 ```bash
 # Minify a single file
-python3 "$SKILL_DIR/minify_code.py" path/to/file.py
+python3 minify_code.py path/to/file.py
 
-# Minify with comments preserved
-python3 "$SKILL_DIR/minify_code.py" --keep-comments path/to/file.go
+# Keep comments
+python3 minify_code.py --keep-comments path/to/file.go
 
-# Minify from stdin
-cat file.ts | python3 "$SKILL_DIR/minify_code.py" --language typescript
+# Pipe from stdin
+cat file.ts | python3 minify_code.py --language typescript
 
-# Output as JSON (for programmatic consumption)
-python3 "$SKILL_DIR/minify_code.py" --json path/to/file.rs
+# JSON output (for programmatic consumption)
+python3 minify_code.py --json path/to/file.rs
 ```
 
 ### Input
@@ -166,18 +168,18 @@ JSON mode (`--json`):
 
 ## Evaluation Tool: `evaluate.py`
 
-A companion evaluation script is provided at the same path as this SKILL.md. It runs three phases to validate the effectiveness of minification:
+Companion evaluation script at the same path as this SKILL.md. Three validation phases:
 
 ```bash
-# Phase 1 + 2: reduction metrics + syntax validation (no API key needed)
-python3 "$SKILL_DIR/evaluate.py" --phase=reduction *.py
-python3 "$SKILL_DIR/evaluate.py" --phase=syntax *.go
+# Phase 1 + 2: reduction metrics + syntax validation (no API key)
+python3 evaluate.py --phase=reduction *.py
+python3 evaluate.py --phase=syntax *.go
 
-# Phase 3: LLM comprehension A/B test (requires Anthropic API key)
-python3 "$SKILL_DIR/evaluate.py" --phase=llm --api-key=$ANTHROPIC_API_KEY *.py
+# Phase 3: LLM comprehension A/B (needs Anthropic API key)
+python3 evaluate.py --phase=llm --api-key=$ANTHROPIC_API_KEY *.py
 
 # Full report
-python3 "$SKILL_DIR/evaluate.py" *.py *.go *.js *.rs
+python3 evaluate.py *.py *.go *.js *.rs
 ```
 
 ### Phase 1 — Token Reduction
