@@ -1,18 +1,18 @@
 ---
 name: code-minification
-description: Use when source files are large (100+ lines) and token budget is tight, or when the agent needs to efficiently explore unfamiliar codebases before editing. Also use when you notice read_minified_file delivers inconsistent line-number mappings vs bash/grep output.
-allowed-tools: Bash(python3 minify_code.py *), Read, Write
+description: Use for read-only exploration of large source files when token budget is tight, especially when the current agent does not provide a native read_minified_file tool. Avoid for line-number-sensitive debugging, code review, stack traces, and edits unless you validate against raw source.
+allowed-tools: Bash(python3 *), Read, Write
 compatibility: opencode
 metadata:
-  languages: "python,javascript,typescript,go,rust,java,c,cpp,csharp,swift,ruby"
-  token_reduction: "20-50%"
+  languages: "python,javascript,typescript,go,rust,java,c,cpp,csharp,swift,ruby,shell"
+  token_reduction: "10-35% typical, higher on some Python files"
 ---
 
-# Code Minification for LLM (Virtual File System)
+# Code Minification for LLM
 
-Strip non-semantic whitespace, indentation, and comments from source code before feeding it to the LLM, reducing token consumption by 20–50% while preserving the code's semantic skeleton.
+Strip comments and formatting noise from source code before feeding it to the LLM, reducing token consumption while preserving the code's semantic skeleton for exploration.
 
-Uses [Tree-sitter](https://tree-sitter.github.io/) AST parsing to safely remove formatting noise, then validates the minified output to guarantee no syntax errors are introduced.
+This standalone skill is a conservative stdlib Python implementation. It uses `tokenize` for Python and lexical scanners for C-style and Ruby-style comments so comment markers inside strings, raw strings, template literals, and common regex literals are preserved. It is not the same as vix's native Tree-sitter virtual filesystem.
 
 ## When to Use
 
@@ -30,9 +30,9 @@ Uses [Tree-sitter](https://tree-sitter.github.io/) AST parsing to safely remove 
 | **Stack trace analysis** | Trace file:line references are useless against minified output |
 | **git diff / code review** | git diff output is in original format — mismatches minified view |
 | **bash + grep mixed with minified files** | bash returns raw formatted code; read_minified_file returns compressed version. **LLM sees two inconsistent views of the same file.** |
-| **Python / YAML / Nim** | Indentation is syntax, not formatting. Minification may alter semantics if not handled correctly |
-| **Custom DSLs or unknown extensions** | Tree-sitter grammar unsupported — falls back silently to raw read |
-| **Line-number-sensitive edits** | edit_minified_file works on minified text: old_string matching fails if you use line numbers from raw tools |
+| **Python / YAML / Nim** | Indentation is syntax, not formatting. Python is handled with `tokenize`; YAML/Nim are not supported |
+| **Custom DSLs or unknown extensions** | The script cannot infer semantics for unsupported formats |
+| **Line-number-sensitive edits** | Minified output has different line offsets; validate against raw source before editing |
 
 ## How It Works (Conceptual)
 
@@ -41,30 +41,28 @@ Source file
     │
     ▼
 ┌─────────────────────────────┐
-│ Tree-sitter AST parse       │
-│ (per-language grammar)      │
+│ Tokenize / lexical scan     │
+│ (stdlib, no dependencies)   │
 └──────────┬──────────────────┘
            ▼
 ┌─────────────────────────────┐
-│ Collect leaf tokens         │
-│ Skip: newline, tab, spaces  │
-│ Optionally skip: comments   │
+│ Preserve protected spans    │
+│ strings, raw strings, regex │
 └──────────┬──────────────────┘
            ▼
 ┌─────────────────────────────┐
-│ Language-specific           │
-│ separator injection         │
-│ (semicolons, spacing, etc.) │
+│ Strip comments outside      │
+│ protected spans             │
 └──────────┬──────────────────┘
            ▼
 ┌─────────────────────────────┐
-│ Token join with minimal     │
-│ spacing (avoid token merge) │
+│ Normalize layout outside    │
+│ protected spans             │
 └──────────┬──────────────────┘
            ▼
 ┌─────────────────────────────┐
-│ Syntax re-validation        │
-│ (re-parse minified output)  │
+│ Optional evaluation         │
+│ parser checks when present  │
 └──────────┬──────────────────┘
            ▼
     Minified output
@@ -72,22 +70,30 @@ Source file
 
 ## Resource Tool: `minify_code.py`
 
-A companion Python script is provided at the same path as this SKILL.md. It implements code minification for the most common languages using built-in stdlib only (no pip install required).
+A companion Python script is provided at the same path as this SKILL.md. It implements code minification for common languages using built-in stdlib only (no pip install required).
+
+Agents usually run shell commands from the project directory, not the skill directory. Resolve the script path relative to this `SKILL.md` before calling it. For common local installs:
+
+```bash
+SKILL_DIR="${CODE_MINIFICATION_SKILL_DIR:-$HOME/.agents/skills/code-minification}"
+test -f "$SKILL_DIR/minify_code.py" || SKILL_DIR="$HOME/.codex/skills/code-minification"
+python3 "$SKILL_DIR/minify_code.py" path/to/file.py
+```
 
 ### Usage
 
 ```bash
 # Minify a single file
-python3 minify_code.py path/to/file.py
+python3 "$SKILL_DIR/minify_code.py" path/to/file.py
 
 # Minify with comments preserved
-python3 minify_code.py --keep-comments path/to/file.go
+python3 "$SKILL_DIR/minify_code.py" --keep-comments path/to/file.go
 
 # Minify from stdin
-cat file.ts | python3 minify_code.py --language typescript
+cat file.ts | python3 "$SKILL_DIR/minify_code.py" --language typescript
 
 # Output as JSON (for programmatic consumption)
-python3 minify_code.py --json path/to/file.rs
+python3 "$SKILL_DIR/minify_code.py" --json path/to/file.rs
 ```
 
 ### Input
@@ -121,18 +127,17 @@ JSON mode (`--json`):
 | Extension | Language | Strategy |
 |---|---|---|
 | `.py` | Python | builtin `tokenize` module (indentation-aware) |
-| `.js`, `.mjs`, `.cjs` | JavaScript | regex comment/whitespace strip |
-| `.ts` | TypeScript | regex comment/whitespace strip |
-| `.jsx`, `.tsx` | React | regex comment/whitespace strip (preserves JSX) |
-| `.go` | Go | regex + semicolon insertion |
-| `.rs` | Rust | regex comment/whitespace strip |
-| `.java` | Java | regex comment/whitespace strip |
-| `.c`, `.h` | C | regex comment/whitespace strip |
-| `.cpp`, `.hpp`, `.cc` | C++ | regex comment/whitespace strip |
-| `.cs` | C# | regex comment/whitespace strip |
-| `.swift` | Swift | regex comment/whitespace strip |
-| `.rb` | Ruby | regex comment/whitespace strip |
-| `.rs` | Rust | regex comment/whitespace strip |
+| `.js`, `.mjs`, `.cjs` | JavaScript | lexical comment strip; preserves strings/templates/common regex literals |
+| `.ts` | TypeScript | lexical comment strip; parser validation skipped unless an external TS parser is available |
+| `.jsx`, `.tsx` | React | lexical comment strip; JSX parser validation skipped |
+| `.go` | Go | lexical comment strip; preserves line boundaries for correctness |
+| `.rs` | Rust | lexical comment strip; preserves common raw strings and nested block comments; optional `rustc` validation |
+| `.java` | Java | lexical comment strip |
+| `.c`, `.h` | C | lexical comment strip; optional `clang` validation |
+| `.cpp`, `.hpp`, `.cc` | C++ | lexical comment strip; optional `clang++ -std=c++20` validation |
+| `.cs` | C# | lexical comment strip |
+| `.swift` | Swift | lexical comment strip; preserves multiline string literals and nested block comments; optional `swiftc -parse` validation |
+| `.rb` | Ruby | lexical hash-comment strip; preserves quoted strings |
 | `.sh`, `.bash` | Shell | preserves newlines, collapses blank lines |
 
 ## Common Mistakes
@@ -140,9 +145,9 @@ JSON mode (`--json`):
 | Mistake | Fix |
 |---|---|
 | Using minified output to match bash/grep results | Use raw `read_file` when you need to cross-reference with bash output |
-| Writing minified code back without a formatter | Always run formatter (gofmt, prettier, ruff) after write_minified_file |
-| Ignoring the syntax re-validation step | Minifier should re-parse output; if grammar check fails, fall back to raw read |
-| Assuming uniform compression across languages | Python minifies ~4-15%, C-family ~13-25%, Go/JS can reach 40-50% |
+| Writing minified code back without a formatter | Prefer raw edit tools; if writing minified code, run the language formatter and tests |
+| Ignoring the syntax validation step | Run `evaluate.py --phase=syntax` when you intend to trust minified output |
+| Assuming uniform compression across languages | Compression varies; shell scripts may barely shrink while Python can shrink heavily |
 | Using minified reads for tasks requiring line numbers | Debug, lint, review tasks: use raw reads. Explore tasks: use minified reads |
 
 ## Anti-Patterns
@@ -165,14 +170,14 @@ A companion evaluation script is provided at the same path as this SKILL.md. It 
 
 ```bash
 # Phase 1 + 2: reduction metrics + syntax validation (no API key needed)
-python3 evaluate.py --phase=reduction *.py
-python3 evaluate.py --phase=syntax *.go
+python3 "$SKILL_DIR/evaluate.py" --phase=reduction *.py
+python3 "$SKILL_DIR/evaluate.py" --phase=syntax *.go
 
 # Phase 3: LLM comprehension A/B test (requires Anthropic API key)
-python3 evaluate.py --phase=llm --api-key=$ANTHROPIC_API_KEY *.py
+python3 "$SKILL_DIR/evaluate.py" --phase=llm --api-key=$ANTHROPIC_API_KEY *.py
 
 # Full report
-python3 evaluate.py *.py *.go *.js *.rs
+python3 "$SKILL_DIR/evaluate.py" *.py *.go *.js *.rs
 ```
 
 ### Phase 1 — Token Reduction
@@ -191,7 +196,7 @@ TOTAL                           4396         3646           17.1%
 
 Validates two properties:
 
-1. **Syntax preservation**: minified output is re-parsed with `compile()` (Python), `gofmt` (Go), or `node --check` (JS). Output must be syntactically valid.
+1. **Syntax preservation where parsers are available**: minified output is checked with tools such as `compile()` (Python), `gofmt` (Go), `node --input-type=module --check` (JS), `rustc`, `javac`, `clang`, `clang++`, `swiftc -parse`, `ruby -c`, or `bash -n`. Unsupported or unavailable parsers are marked `SKIP`, not `PASS`.
 2. **Idempotency**: `minify(minify(x)) == minify(x)`. If minifying twice produces different output, the edit tool's `old_string` matching will fail on the second pass.
 
 ```
@@ -219,6 +224,6 @@ Ran across Python, Go, JavaScript, and Rust samples:
 | Metric | Result |
 |---|---|
 | Average token reduction | 17-24% per file |
-| Syntax validation | ✅ 100% pass rate |
+| Syntax validation | Checked parsers pass; unsupported parsers are skipped |
 | Idempotency | ✅ 100% pass rate |
 | LLM comprehension | Equivalent (verified with Claude Sonnet 4) |

@@ -14,6 +14,8 @@ Language support: python, javascript, typescript, go, rust, java, c, cpp,
                   csharp, swift, ruby, shell, jsx, tsx
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -52,13 +54,308 @@ def detect_language(filepath: str, forced: str | None = None) -> str | None:
 # Shared regex patterns
 # ---------------------------------------------------------------------------
 
-_RE_BLOCK_COMMENT = re.compile(r'/\*[\s\S]*?\*/')
-_RE_LINE_COMMENT = re.compile(r'//[^\n]*')
 _RE_HASH_COMMENT = re.compile(r'(?m)^\s*#.*$')
-_RE_TRAILING_WS = re.compile(r'[ \t]+$', re.MULTILINE)
-_RE_LEADING_WS = re.compile(r'^[ \t]+', re.MULTILINE)
 _RE_BLANK_LINES = re.compile(r'\n{2,}')
-_RE_MULTI_SPACE = re.compile(r'[ \t]{2,}')
+
+
+def _append(chars: list[str], protected: list[bool], text: str, is_protected: bool) -> None:
+    chars.extend(text)
+    protected.extend([is_protected] * len(text))
+
+
+def _parse_quoted(source: str, start: int, quote: str, triple: bool = False) -> int:
+    n = len(source)
+    i = start + (3 if triple else 1)
+    while i < n:
+        if source[i] == "\\":
+            i += 2
+            continue
+        if triple and source.startswith(quote * 3, i):
+            return i + 3
+        if not triple and source[i] == quote:
+            return i + 1
+        i += 1
+    return n
+
+
+def _parse_backtick(source: str, start: int) -> int:
+    n = len(source)
+    i = start + 1
+    while i < n:
+        if source[i] == "\\":
+            i += 2
+            continue
+        if source[i] == "`":
+            return i + 1
+        i += 1
+    return n
+
+
+def _parse_cpp_raw_string(source: str, start: int) -> int | None:
+    if not source.startswith('R"', start):
+        return None
+    open_paren = source.find("(", start + 2)
+    if open_paren == -1:
+        return None
+    delimiter = source[start + 2:open_paren]
+    if len(delimiter) > 32:
+        return None
+    close = ")" + delimiter + '"'
+    end = source.find(close, open_paren + 1)
+    if end == -1:
+        return None
+    return end + len(close)
+
+
+def _parse_rust_raw_string(source: str, start: int) -> int | None:
+    i = start
+    if source.startswith("br", i):
+        i += 2
+    elif source.startswith("r", i):
+        i += 1
+    else:
+        return None
+
+    hashes = 0
+    while i < len(source) and source[i] == "#":
+        hashes += 1
+        i += 1
+    if i >= len(source) or source[i] != '"':
+        return None
+
+    close = '"' + ("#" * hashes)
+    end = source.find(close, i + 1)
+    if end == -1:
+        return None
+    return end + len(close)
+
+
+def _last_word(chars: list[str]) -> str:
+    i = len(chars) - 1
+    while i >= 0 and chars[i].isspace():
+        i -= 1
+    end = i + 1
+    while i >= 0 and (chars[i].isalnum() or chars[i] == "_"):
+        i -= 1
+    return "".join(chars[i + 1:end])
+
+
+def _regex_literal_allowed(chars: list[str]) -> bool:
+    i = len(chars) - 1
+    while i >= 0 and chars[i].isspace():
+        i -= 1
+    if i < 0:
+        return True
+    if chars[i] in "([{=:;,!&|?+-*%^~<>":
+        return True
+    return _last_word(chars) in {
+        "return", "throw", "case", "delete", "typeof", "void", "new",
+        "yield", "await", "else", "do", "in", "of",
+    }
+
+
+def _parse_regex_literal(source: str, start: int) -> int:
+    n = len(source)
+    i = start + 1
+    in_class = False
+    while i < n:
+        c = source[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            in_class = True
+        elif c == "]":
+            in_class = False
+        elif c == "/" and not in_class:
+            i += 1
+            while i < n and (source[i].isalpha() or source[i].isdigit()):
+                i += 1
+            return i
+        elif c == "\n":
+            return start + 1
+        i += 1
+    return start + 1
+
+
+def _find_block_comment_end(source: str, start: int, nested: bool = False) -> int:
+    if not nested:
+        return source.find("*/", start + 2)
+
+    depth = 1
+    i = start + 2
+    n = len(source)
+    while i + 1 < n:
+        pair = source[i:i + 2]
+        if pair == "/*":
+            depth += 1
+            i += 2
+            continue
+        if pair == "*/":
+            depth -= 1
+            if depth == 0:
+                return i
+            i += 2
+            continue
+        i += 1
+    return -1
+
+
+def _strip_c_style_comments(
+    source: str,
+    keep_comments: bool = False,
+    *,
+    js_like: bool = False,
+    backtick_strings: bool = False,
+    triple_double_strings: bool = False,
+    rust_raw_strings: bool = False,
+    cpp_raw_strings: bool = False,
+    nested_block_comments: bool = False,
+) -> tuple[list[str], list[bool]]:
+    chars: list[str] = []
+    protected: list[bool] = []
+    i = 0
+    n = len(source)
+
+    while i < n:
+        c = source[i]
+        nxt = source[i + 1] if i + 1 < n else ""
+
+        if cpp_raw_strings and c == "R" and nxt == '"':
+            end = _parse_cpp_raw_string(source, i)
+            if end is not None:
+                _append(chars, protected, source[i:end], True)
+                i = end
+                continue
+
+        if rust_raw_strings and c in {"r", "b"}:
+            end = _parse_rust_raw_string(source, i)
+            if end is not None:
+                _append(chars, protected, source[i:end], True)
+                i = end
+                continue
+
+        if triple_double_strings and source.startswith('"""', i):
+            end = _parse_quoted(source, i, '"', triple=True)
+            _append(chars, protected, source[i:end], True)
+            i = end
+            continue
+
+        if c in {'"', "'"}:
+            end = _parse_quoted(source, i, c)
+            _append(chars, protected, source[i:end], True)
+            i = end
+            continue
+
+        if backtick_strings and c == "`":
+            end = _parse_backtick(source, i)
+            _append(chars, protected, source[i:end], True)
+            i = end
+            continue
+
+        if c == "/" and nxt == "/" and not keep_comments:
+            end = source.find("\n", i + 2)
+            if end == -1:
+                break
+            _append(chars, protected, "\n", False)
+            i = end + 1
+            continue
+
+        if c == "/" and nxt == "*" and not keep_comments:
+            end = _find_block_comment_end(source, i, nested_block_comments)
+            if end == -1:
+                break
+            comment = source[i:end + 2]
+            _append(chars, protected, "\n" if "\n" in comment else " ", False)
+            i = end + 2
+            continue
+
+        if js_like and c == "/" and nxt not in {"/", "*"} and _regex_literal_allowed(chars):
+            end = _parse_regex_literal(source, i)
+            if end > i + 1:
+                _append(chars, protected, source[i:end], True)
+                i = end
+                continue
+
+        _append(chars, protected, c, False)
+        i += 1
+
+    return chars, protected
+
+
+def _strip_hash_comments(source: str, keep_comments: bool = False) -> tuple[list[str], list[bool]]:
+    chars: list[str] = []
+    protected: list[bool] = []
+    i = 0
+    n = len(source)
+    while i < n:
+        c = source[i]
+        if c in {'"', "'", "`"}:
+            end = _parse_backtick(source, i) if c == "`" else _parse_quoted(source, i, c)
+            _append(chars, protected, source[i:end], True)
+            i = end
+            continue
+        if c == "#" and not keep_comments:
+            end = source.find("\n", i + 1)
+            if end == -1:
+                break
+            _append(chars, protected, "\n", False)
+            i = end + 1
+            continue
+        _append(chars, protected, c, False)
+        i += 1
+    return chars, protected
+
+
+def _normalize_layout(chars: list[str], protected: list[bool], *, strip_leading: bool = True, collapse_spaces: bool = True) -> str:
+    lines: list[tuple[list[str], list[bool]]] = []
+    cur_chars: list[str] = []
+    cur_protected: list[bool] = []
+    for c, p in zip(chars, protected):
+        if c == "\n" and not p:
+            lines.append((cur_chars, cur_protected))
+            cur_chars, cur_protected = [], []
+        else:
+            cur_chars.append(c)
+            cur_protected.append(p)
+    lines.append((cur_chars, cur_protected))
+
+    out_lines: list[str] = []
+    previous_blank = False
+    for line_chars, line_protected in lines:
+        start = 0
+        end = len(line_chars)
+        if strip_leading:
+            while start < end and not line_protected[start] and line_chars[start] in " \t":
+                start += 1
+        while end > start and not line_protected[end - 1] and line_chars[end - 1] in " \t":
+            end -= 1
+
+        pieces: list[str] = []
+        in_space = False
+        has_non_space = False
+        for c, p in zip(line_chars[start:end], line_protected[start:end]):
+            if not p and c in " \t":
+                if collapse_spaces and not in_space:
+                    pieces.append(" ")
+                elif not collapse_spaces:
+                    pieces.append(c)
+                in_space = True
+                continue
+            pieces.append(c)
+            in_space = False
+            if p or not c.isspace():
+                has_non_space = True
+
+        if not has_non_space:
+            if not previous_blank and out_lines:
+                out_lines.append("")
+            previous_blank = True
+            continue
+        out_lines.append("".join(pieces))
+        previous_blank = False
+
+    return "\n".join(out_lines).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -66,16 +363,18 @@ _RE_MULTI_SPACE = re.compile(r'[ \t]{2,}')
 # Comments stripped, leading+trailing whitespace removed, blank lines collapsed
 # ---------------------------------------------------------------------------
 
-def _generic_minify(source: str, keep_comments: bool = False) -> str:
-    result = source
-    if not keep_comments:
-        result = _RE_BLOCK_COMMENT.sub('', result)
-        result = _RE_LINE_COMMENT.sub('', result)
-    result = _RE_TRAILING_WS.sub('', result)
-    result = _RE_LEADING_WS.sub('', result)
-    result = _RE_BLANK_LINES.sub('\n', result)
-    result = result.strip()
-    return result
+def _generic_minify(source: str, keep_comments: bool = False, language: str | None = None) -> str:
+    chars, protected = _strip_c_style_comments(
+        source,
+        keep_comments,
+        js_like=language in {"javascript", "typescript", "jsx", "tsx"},
+        backtick_strings=language in {"javascript", "typescript", "jsx", "tsx", "go"},
+        triple_double_strings=language == "swift",
+        rust_raw_strings=language == "rust",
+        cpp_raw_strings=language in {"c", "cpp"},
+        nested_block_comments=language in {"rust", "swift"},
+    )
+    return _normalize_layout(chars, protected)
 
 
 # ---------------------------------------------------------------------------
@@ -143,35 +442,11 @@ def _python_minify(source: str, keep_comments: bool = False) -> str:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Go: strip comments, collapse whitespace, insert ; per Go's ASI rules
-# ---------------------------------------------------------------------------
-
-_GO_ASI_TRIGGER = re.compile(
-    r'(?:'
-    r'[a-zA-Z0-9_\x80-\xff]'
-    r'|"|\x60|\''
-    r'|\)|\]|\}'
-    r'|--|\+\+'
-    r'|$'
-    r')$'
-)
-
-
 def _go_minify(source: str, keep_comments: bool = False) -> str:
-    result = _generic_minify(source, keep_comments)
-    lines = result.split('\n')
-    tokens = []
-    for line in lines:
-        s = line.strip()
-        if not s:
-            continue
-        if _GO_ASI_TRIGGER.search(s):
-            s = s.rstrip(';') + ';'
-        tokens.append(s)
-    text = ' '.join(tokens)
-    text = _RE_MULTI_SPACE.sub(' ', text)
-    return text
+    # Keep newlines in standalone mode. Go's semicolon insertion is easy to
+    # get wrong without a parser, and preserving line boundaries keeps raw
+    # strings and formatter round-trips intact.
+    return _generic_minify(source, keep_comments, "go")
 
 
 # ---------------------------------------------------------------------------
@@ -182,28 +457,13 @@ def _shell_minify(source: str, keep_comments: bool = False) -> str:
     result = source
     if not keep_comments:
         result = _RE_HASH_COMMENT.sub('', result)
-    result = _RE_TRAILING_WS.sub('', result)
-    result = _RE_BLANK_LINES.sub('\n', result)
-    result = result.strip()
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Ruby: strip comments, collapse blank lines
-# ---------------------------------------------------------------------------
-
-_RUBY_COMMENT_RE = re.compile(r'#[^\n]*')
+    lines = [line.rstrip() for line in result.splitlines()]
+    return _RE_BLANK_LINES.sub('\n', "\n".join(lines)).strip()
 
 
 def _ruby_minify(source: str, keep_comments: bool = False) -> str:
-    result = source
-    if not keep_comments:
-        result = _RUBY_COMMENT_RE.sub('', result)
-    result = _RE_TRAILING_WS.sub('', result)
-    result = _RE_LEADING_WS.sub('', result)
-    result = _RE_BLANK_LINES.sub('\n', result)
-    result = result.strip()
-    return result
+    chars, protected = _strip_hash_comments(source, keep_comments)
+    return _normalize_layout(chars, protected)
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +482,7 @@ def minify(source: str, language: str | None, keep_comments: bool = False) -> st
     minifier = _LANGUAGE_MINIFIERS.get(language)
     if minifier:
         return minifier(source, keep_comments)
-    return _generic_minify(source, keep_comments)
+    return _generic_minify(source, keep_comments, language)
 
 
 # ---------------------------------------------------------------------------

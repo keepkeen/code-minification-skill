@@ -6,7 +6,7 @@
   </picture>
 </p>
 
-<h3 align="center">Slim down source code for AI agents — save 20–50% on tokens</h3>
+<h3 align="center">Slim down source code for AI agents — save tokens during exploration</h3>
 
 <p align="center">
   <a href="#-quick-start"><img src="https://img.shields.io/badge/quick_start-▶-blue?style=flat&logo=github" alt="Quick Start"></a>
@@ -19,15 +19,15 @@
 
 ---
 
-An [Agent Skill](https://agentskills.io) for **Claude Code**, **Codex**, **opencode**, and compatible AI coding agents. Strips non-semantic whitespace, indentation, and comments from source files — while preserving executable semantics across **13 languages**. Zero external dependencies.
+An [Agent Skill](https://agentskills.io) for **Claude Code**, **Codex**, **opencode**, and compatible AI coding agents. It strips comments and formatting noise from source files for read-only exploration while preserving strings, raw strings, template literals, and common regex literals. Zero external dependencies.
 
 ## ✨ Features
 
 - **Zero dependencies** — pure Python stdlib, no `pip install`
-- **13 languages** — Python (`tokenize`), Go (ASI), JS/TS, Rust, Java, C/C++, C#, Swift, Ruby, Shell
+- **13 languages** — Python (`tokenize`), JS/TS, Go, Rust, Java, C/C++, C#, Swift, Ruby, Shell
 - **Idempotent** — `minify(minify(x)) == minify(x)`, safe for tool round-trips
-- **Syntax validated** — re-parses output, guarantees no syntax errors
-- **LLM-verified** — A/B tested with Claude Sonnet 4, no semantic degradation
+- **Syntax checks when available** — Python, Go, JS, Rust, Java, C/C++, Swift, Ruby, and Shell checks are supported when local parsers exist
+- **Lexical safety** — comment markers inside protected literals are preserved
 - **3-phase eval** — built-in `evaluate.py`: reduction, syntax, LLM comprehension
 
 ## 🚀 Quick Start
@@ -68,11 +68,11 @@ alias minify='python3 /path/to/code-minification-skill/minify_code.py'
 
 ```mermaid
 flowchart LR
-    A[Source File] --> B[Parse AST / Tokenize]
-    B --> C[Collect Leaf Tokens]
-    C --> D[Strip Comments & Whitespace]
-    D --> E[Insert Language Separators]
-    E --> F[Re-validate Syntax]
+    A[Source File] --> B[Tokenize / Lexical Scan]
+    B --> C[Preserve Protected Spans]
+    C --> D[Strip Comments Outside Spans]
+    D --> E[Normalize Layout]
+    E --> F[Optional Parser Checks]
     F --> G[Minified Output]
     
     style A fill:#e1f5fe
@@ -80,26 +80,26 @@ flowchart LR
     style F fill:#fff3e0
 ```
 
-**Python** uses stdlib `tokenize` for AST-accurate minification that preserves indentation semantics.  
-**Go** uses regex + automatic semicolon insertion (ASI) to stay valid.  
-All other languages use regex comment/whitespace stripping with language-specific rules.
+**Python** uses stdlib `tokenize` to preserve indentation semantics.  
+**C-style languages** use a single-pass lexical scanner rather than raw regex comment stripping.  
+**Evaluation** uses local parsers where available and marks unsupported parser checks as skipped.
 
 ## 🌐 Supported Languages
 
 | Extension | Language | Strategy |
 |:---|---:|:---|
 | `.py` | Python | `tokenize` module — indentation-aware |
-| `.js` `.mjs` `.cjs` | JavaScript | Regex comment/whitespace strip |
-| `.ts` | TypeScript | Regex comment/whitespace strip |
-| `.jsx` `.tsx` | React | Regex — preserves JSX |
-| `.go` | Go | Regex + semicolon insertion |
-| `.rs` | Rust | Regex comment/whitespace strip |
-| `.java` | Java | Regex comment/whitespace strip |
-| `.c` `.h` | C | Regex comment/whitespace strip |
-| `.cpp` `.hpp` `.cc` | C++ | Regex comment/whitespace strip |
-| `.cs` | C# | Regex comment/whitespace strip |
-| `.swift` | Swift | Regex comment/whitespace strip |
-| `.rb` | Ruby | Regex comment/whitespace strip |
+| `.js` `.mjs` `.cjs` | JavaScript | Lexical comment strip |
+| `.ts` | TypeScript | Lexical comment strip |
+| `.jsx` `.tsx` | React | Lexical comment strip |
+| `.go` | Go | Lexical comment strip, preserves newlines |
+| `.rs` | Rust | Lexical comment strip, raw/nested-comment aware |
+| `.java` | Java | Lexical comment strip |
+| `.c` `.h` | C | Lexical comment strip |
+| `.cpp` `.hpp` `.cc` | C++ | Lexical comment strip, raw string aware |
+| `.cs` | C# | Lexical comment strip |
+| `.swift` | Swift | Lexical comment strip, multiline string/nested-comment aware |
+| `.rb` | Ruby | Lexical hash-comment strip |
 | `.sh` `.bash` | Shell | Collapse blank lines |
 
 ## 📈 Evaluation
@@ -118,10 +118,10 @@ gantt
 ```
 Metric                    Result
 ──────────────────────────────────────
-Average token reduction   17–24%
-Syntax validation         100% pass
-Idempotency               100% pass
-LLM comprehension         Equivalent (A/B w/ Claude Sonnet 4)
+Average token reduction   ~10–35% typical
+Syntax validation         Checked parsers pass; others skip
+Idempotency               Expected to pass; verify with evaluate.py
+LLM comprehension         Best used for read-only exploration
 ```
 
 Run it yourself:
@@ -144,7 +144,7 @@ python3 evaluate.py samples/*.py samples/*.go samples/*.js
 | 🔴 Compile error debugging | Error line numbers mismatch minified output |
 | 🔴 Stack trace analysis | `file:line` references become useless |
 | 🔴 `git diff` / code review | Diff vs minified view are misaligned |
-| 🔴 Python / YAML minification | Indentation is syntax — `tokenize` handles it, but test first |
+| 🔴 Unsupported config/DSL files | JSON/YAML/TOML/DSLs often need exact formatting or line references |
 
 See [`SKILL.md`](SKILL.md) for the full risk table and anti-patterns.
 
@@ -155,6 +155,7 @@ code-minification/
 ├── SKILL.md              Skill definition (agent-consumable)
 ├── minify_code.py        Minifier — pure stdlib, 13 languages
 ├── evaluate.py           3-phase evaluation pipeline
+├── test_minify_code.py   Regression tests for lexical edge cases
 ├── README.md             This file
 ├── README.zh-CN.md       Chinese translation
 ├── LICENSE.txt           MIT license

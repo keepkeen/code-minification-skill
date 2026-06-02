@@ -16,13 +16,24 @@ Full report:
   python3 evaluate.py sample.py sample.go sample.js
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+
+sys.dont_write_bytecode = True
+
+SCRIPT_DIR = os.path.dirname(__file__)
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+import minify_code
 
 MINIFIER = os.path.join(os.path.dirname(__file__), "minify_code.py")
 
@@ -31,15 +42,40 @@ MINIFIER = os.path.join(os.path.dirname(__file__), "minify_code.py")
 # Phase 1: Token reduction
 # ---------------------------------------------------------------------------
 
+def _minify_path(path: str) -> dict | None:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        source = f.read()
+    language = minify_code.detect_language(path)
+    if not language:
+        return None
+    output = minify_code.minify(source, language)
+    original_chars = len(source)
+    minified_chars = len(output)
+    ratio = 1.0 - (minified_chars / original_chars) if original_chars > 0 else 0.0
+    return {
+        "language": language,
+        "original_chars": original_chars,
+        "minified_chars": minified_chars,
+        "reduction_ratio": round(ratio, 3),
+        "comments_stripped": True,
+        "output": output,
+    }
+
+
 def phase_reduction(file_paths: list[str]) -> list[dict]:
     results = []
     for path in file_paths:
-        result = json.loads(
-            subprocess.check_output(
-                [sys.executable, MINIFIER, "--json", path],
-                stderr=subprocess.DEVNULL,
-            )
-        )
+        result = _minify_path(path)
+        if result is None:
+            results.append({
+                "file": os.path.basename(path),
+                "language": "unsupported",
+                "original_chars": os.path.getsize(path),
+                "minified_chars": os.path.getsize(path),
+                "reduction_ratio": 0.0,
+                "skipped": True,
+            })
+            continue
         # Estimate token count: ~4 chars per token for code
         result["original_tokens"] = result["original_chars"] // 4
         result["minified_tokens"] = result["minified_chars"] // 4
@@ -52,43 +88,93 @@ def phase_reduction(file_paths: list[str]) -> list[dict]:
 # Phase 2: Syntax validation
 # ---------------------------------------------------------------------------
 
-def _check_parseable(code: str, language: str) -> tuple[bool, str]:
-    """Check if minified code is syntactically valid using available parsers."""
+def _run_stdin_parser(cmd: list[str], code: str, timeout: int = 10) -> tuple[bool | None, str]:
+    try:
+        result = subprocess.run(
+            cmd,
+            input=code,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return None, f"({cmd[0]} not installed, skipped)"
+    except subprocess.TimeoutExpired:
+        return False, "timeout"
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout).strip()
+    return True, ""
+
+
+def _run_file_parser(cmd_template: list[str], code: str, suffix: str, timeout: int = 10, filename: str | None = None) -> tuple[bool | None, str]:
+    exe = cmd_template[0]
+    if shutil.which(exe) is None:
+        return None, f"({exe} not installed, skipped)"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, filename or ("input" + suffix))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(code)
+        cmd = [arg.format(file=path, dir=tmpdir) for arg in cmd_template]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "timeout"
+        if result.returncode != 0:
+            return False, (result.stderr or result.stdout).strip()
+        return True, ""
+
+
+def _java_filename(code: str) -> str:
+    match = re.search(r"\bpublic\s+(?:final\s+|abstract\s+)?(?:class|interface|enum|record)\s+([A-Za-z_]\w*)", code)
+    if match:
+        return match.group(1) + ".java"
+    return "Input.java"
+
+
+def _check_parseable(code: str, language: str) -> tuple[bool | None, str]:
+    """Check if minified code is syntactically valid using available parsers.
+
+    Returns:
+        True: syntax checked and valid.
+        False: syntax checked and invalid.
+        None: no suitable parser was available for this standalone script.
+    """
     if language == "python":
         try:
             compile(code, "<minified>", "exec")
             return True, ""
         except SyntaxError as e:
             return False, str(e)
-    elif language == "go":
-        try:
-            subprocess.run(
-                ["gofmt", "-e"],
-                input=code,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            return True, ""
-        except FileNotFoundError:
-            return True, "(gofmt not installed, skipped)"
-        except subprocess.TimeoutExpired:
-            return False, "timeout"
-    elif language in ("javascript", "typescript"):
-        try:
-            subprocess.run(
-                ["node", "--check", "-"],
-                input=code,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            return True, ""
-        except FileNotFoundError:
-            return True, "(node not installed, skipped)"
-        except subprocess.CalledProcessError as e:
-            return False, e.stderr.strip()
-    return True, "(no parser available)"
+    if language == "go":
+        return _run_stdin_parser(["gofmt", "-e"], code)
+    if language == "javascript":
+        return _run_stdin_parser(["node", "--input-type=module", "--check", "-"], code)
+    if language == "typescript":
+        return None, "(node --check cannot parse TypeScript, skipped)"
+    if language == "rust":
+        return _run_file_parser(
+            ["rustc", "--edition=2021", "--crate-type", "lib", "--emit=metadata", "{file}", "-o", "{dir}/lib.rmeta"],
+            code,
+            ".rs",
+        )
+    if language == "java":
+        return _run_file_parser(["javac", "-Xlint:none", "-d", "{dir}/out", "{file}"], code, ".java", filename=_java_filename(code))
+    if language == "c":
+        return _run_stdin_parser(["clang", "-x", "c", "-fsyntax-only", "-"], code)
+    if language == "cpp":
+        return _run_stdin_parser(["clang++", "-std=c++20", "-x", "c++", "-fsyntax-only", "-"], code)
+    if language == "swift":
+        return _run_file_parser(["swiftc", "-parse", "{file}"], code, ".swift")
+    if language == "ruby":
+        return _run_stdin_parser(["ruby", "-c"], code)
+    if language == "shell":
+        return _run_stdin_parser(["bash", "-n"], code)
+    return None, "(no parser available)"
 
 
 def phase_syntax(file_paths: list[str]) -> list[dict]:
@@ -97,35 +183,38 @@ def phase_syntax(file_paths: list[str]) -> list[dict]:
         with open(path) as f:
             original = f.read()
 
-        result = json.loads(
-            subprocess.check_output(
-                [sys.executable, MINIFIER, "--json", path],
-                stderr=subprocess.DEVNULL,
-            )
-        )
+        result = _minify_path(path)
+        if result is None:
+            results.append({
+                "file": os.path.basename(path),
+                "language": "unsupported",
+                "original_parseable": None,
+                "original_parse_note": "(unsupported file type)",
+                "minified_parseable": None,
+                "parse_error": "(unsupported file type)",
+                "idempotent": True,
+            })
+            continue
         language = result["language"]
         minified = result["output"]
 
         # Check original is parseable (baseline)
         orig_ok, orig_err = _check_parseable(original, language)
-        min_ok, min_err = _check_parseable(minified, language)
+        if orig_ok is False:
+            min_ok, min_err = None, "baseline is not parseable by this parser: " + orig_err
+        else:
+            min_ok, min_err = _check_parseable(minified, language)
 
         # Idempotency check
-        idem_result = subprocess.check_output(
-            [sys.executable, MINIFIER, "--json", "--language", language],
-            input=minified,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        )
-        idem = json.loads(idem_result)
-        idempotent = idem["output"] == minified
+        idempotent = minify_code.minify(minified, language) == minified
 
         results.append({
             "file": os.path.basename(path),
             "language": language,
             "original_parseable": orig_ok,
+            "original_parse_note": orig_err,
             "minified_parseable": min_ok,
-            "parse_error": min_err if not min_ok else "",
+            "parse_error": min_err if min_ok is not True else "",
             "idempotent": idempotent,
         })
     return results
@@ -162,12 +251,9 @@ def phase_llm(file_paths: list[str], api_key: str) -> list[dict]:
         with open(path) as f:
             original = f.read()
 
-        result = json.loads(
-            subprocess.check_output(
-                [sys.executable, MINIFIER, "--json", path],
-                stderr=subprocess.DEVNULL,
-            )
-        )
+        result = _minify_path(path)
+        if result is None:
+            continue
         language = result["language"]
         minified = result["output"]
 
@@ -212,6 +298,9 @@ def print_report(phases: dict) -> None:
         total_orig = 0
         total_min = 0
         for r in data:
+            if r.get("skipped"):
+                print(f"{r['file']:<20} {'SKIP':<10} {r['original_chars']:<12} {'':<12} {'unsupported':>10}")
+                continue
             ratio = r["reduction_ratio"]
             total_orig += r["original_chars"]
             total_min += r["minified_chars"]
@@ -228,23 +317,28 @@ def print_report(phases: dict) -> None:
         print("=" * 60)
         print("Phase 2: Syntax Validation & Idempotency")
         print("=" * 60)
-        print(f"{'File':<20} {'Lang':<10} {'Parseable':<12} {'Idempotent':<12}")
+        print(f"{'File':<20} {'Lang':<10} {'Parseable':<35} {'Idempotent':<12}")
         print("-" * 54)
         all_pass = True
         for r in data:
             parse_ok = r["minified_parseable"]
             idem = r["idempotent"]
-            parse_status = "✅" if parse_ok else "❌ " + r.get("parse_error", "")
+            if parse_ok is True:
+                parse_status = "OK"
+            elif parse_ok is False:
+                parse_status = "FAIL " + r.get("parse_error", "")
+            else:
+                parse_status = "SKIP " + r.get("parse_error", "")
             idem_status = "✅" if idem else "❌"
             msg = f"{r['file']:<20} {r['language']:<10} {parse_status:<35} {idem_status:<12}"
             print(msg)
-            if not parse_ok or not idem:
+            if parse_ok is False or not idem:
                 all_pass = False
         print("-" * 54)
         if all_pass:
-            print("✅ All files pass syntax and idempotency checks.")
+            print("All checked parsers pass, and all files are idempotent.")
         else:
-            print("❌ Some files failed checks — review above.")
+            print("Some files failed checks — review above.")
 
     if "llm" in phases:
         data = phases["llm"]
