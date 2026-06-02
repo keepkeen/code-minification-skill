@@ -1,0 +1,63 @@
+<svg width="800" height="200" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#16213e"/>
+    </linearGradient>
+    <linearGradient id="bar-before" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3a7bd5"/>
+      <stop offset="100%" stop-color="#5e9de6"/>
+    </linearGradient>
+    <linearGradient id="bar-after" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00d2ff"/>
+      <stop offset="100%" stop-color="#48e5ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="200" rx="16" fill="url(#bg)"/>
+
+  <!-- Code brackets decoration -->
+  <text x="38" y="82" font-family="monospace" font-size="28" fill="#00d2ff" opacity="0.12">&lt;/&gt;</text>
+  <text x="38" y="162" font-family="monospace" font-size="28" fill="#00d2ff" opacity="0.08">{ }</text>
+  <text x="710" y="82" font-family="monospace" font-size="28" fill="#00d2ff" opacity="0.12">/* */</text>
+
+  <!-- Before bars (tall - original) -->
+  <rect x="60" y="55" width="16" height="90" rx="4" fill="url(#bar-before)" opacity="0.35"/>
+  <rect x="86" y="35" width="16" height="110" rx="4" fill="url(#bar-before)" opacity="0.45"/>
+  <rect x="112" y="50" width="16" height="95" rx="4" fill="url(#bar-before)" opacity="0.4"/>
+  <rect x="138" y="25" width="16" height="120" rx="4" fill="url(#bar-before)" opacity="0.5"/>
+
+  <!-- Arrow -->
+  <text x="174" y="103" font-family="Arial, sans-serif" font-size="22" fill="#8892b0" font-weight="bold">→</text>
+
+  <!-- After bars (short - minified) -->
+  <rect x="210" y="85" width="16" height="60" rx="4" fill="url(#bar-after)" opacity="0.85"/>
+  <rect x="236" y="65" width="16" height="80" rx="4" fill="url(#bar-after)" opacity="0.85"/>
+  <rect x="262" y="80" width="16" height="65" rx="4" fill="url(#bar-after)" opacity="0.85"/>
+  <rect x="288" y="55" width="16" height="90" rx="4" fill="url(#bar-after)" opacity="0.85"/>
+
+  <!-- Percentage badge -->
+  <rect x="230" y="20" width="64" height="28" rx="14" fill="#00c853"/>
+  <text x="262" y="39" font-family="Arial, sans-serif" font-size="13" fill="#fff" text-anchor="middle" font-weight="bold">-42%</text>
+
+  <!-- Title -->
+  <text x="350" y="82" font-family="'SF Pro Display', -apple-system, Arial, sans-serif" font-size="32" fill="#ffffff" font-weight="700">Code Minification</text>
+  <text x="350" y="114" font-family="'SF Pro Display', -apple-system, Arial, sans-serif" font-size="18" fill="#8892b0" font-weight="400">Slim down source files for AI agents</text>
+
+  <!-- Bottom badges -->
+  <rect x="350" y="133" width="80" height="24" rx="12" fill="#3a7bd5" opacity="0.7"/>
+  <text x="390" y="149" font-family="Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">13 languages</text>
+
+  <rect x="440" y="133" width="72" height="24" rx="12" fill="#3a7bd5" opacity="0.7"/>
+  <text x="476" y="149" font-family="Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">zero deps</text>
+
+  <rect x="522" y="133" width="80" height="24" rx="12" fill="#3a7bd5" opacity="0.7"/>
+  <text x="562" y="149" font-family="Arial, sans-serif" font-size="11" fill="#fff" text-anchor="middle">LLM-verified</text>
+
+  <!-- Agent Skills badge -->
+  <rect x="630" y="162" width="140" height="20" rx="10" fill="#00d2ff" opacity="0.12"/>
+  <text x="700" y="176" font-family="Arial, sans-serif" font-size="10" fill="#00d2ff" text-anchor="middle">Agent Skills 1.0</text>
+
+  <text x="170" y="168" font-family="Arial, sans-serif" font-size="11" fill="#8892b0">20–50% token reduction</text>
+</svg>
